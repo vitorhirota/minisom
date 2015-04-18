@@ -12,17 +12,34 @@ from warnings import warn
 """
 
 
+# distances
 def fast_norm(x):
-    """Returns norm-2 of a 1-D numpy array.
-
-    * faster than np.linalg.norm in case of 1-D arrays (numpy 1.9.2rc1).
+    """
+        Returns norm-2 of a 1-D numpy array.
+        * faster than np.linalg.norm in case of 1-D arrays (numpy 1.9.2rc1).
     """
     return sqrt(np.dot(x, x.T))
 
 
-class MiniSom:
+# neighboorhood
+def gaussian(c, sigma, neigx, neigy):
+    """ Returns a Gaussian centered in c """
+    d = 2 * np.pi * sigma * sigma
+    ax = np.exp(-np.power(neigx - c[0], 2) / d)
+    ay = np.exp(-np.power(neigy - c[1], 2) / d)
+    return np.outer(ax, ay)  # the external product gives a matrix
 
-    def __init__(self, x, y, input_len, sigma=1.0, learning_rate=0.5, random_seed=None):
+def diff_gaussian(c, sigma, neigx, neigy):
+    """ Mexican hat centered in c (unused) """
+    xx, yy = np.meshgrid(neigx, neigy)
+    p = np.power(xx - c[0], 2) + np.power(yy - c[1], 2)
+    d = 2 * np.pi * sigma * sigma
+    return np.exp(-(p) / d) * (1 - 2 / d * p)
+
+
+class MiniSom(object):
+    def __init__(self, x, y, input_len, sigma=1.0, learning_rate=0.5,
+                 neighborhood_fn=gaussian, random_seed=None):
         """
             Initializes a Self Organizing Maps.
             x,y - dimensions of the SOM
@@ -35,20 +52,24 @@ class MiniSom:
         """
         if sigma >= x / 2.0 or sigma >= y / 2.0:
             warn('Warning: sigma is too high for the dimension of the map.')
-        if random_seed:
-            self.random_generator = np.random.RandomState(random_seed)
-        else:
-            self.random_generator = np.random.RandomState(random_seed)
-        self.learning_rate = learning_rate
         self.sigma = sigma
+        self.learning_rate = learning_rate
+        self.random_generator = np.random.RandomState(random_seed)
+
         # random initialization
         self.weights = self.random_generator.rand(x, y, input_len) * 2 - 1
+
         # normalization
         self.weights = np.array([v / np.linalg.norm(v) for v in self.weights])
         self.activation_map = np.zeros((x, y))
         self.neigx = np.arange(x)
         self.neigy = np.arange(y)  # used to evaluate the neighborhood function
-        self.neighborhood = self.gaussian
+        self.neighborhood = neighborhood_fn
+
+    def _init_T(self, num_iteration):
+        """ Initializes the parameter T needed to adjust the learning rate """
+        # keeps the learning rate nearly constant for the first half of the iterations
+        self.T = num_iteration / 2
 
     def _activate(self, x):
         """ Updates matrix activation_map, in this matrix the element i,j is the response of the neuron i,j to x """
@@ -59,31 +80,12 @@ class MiniSom:
             self.activation_map[it.multi_index] = fast_norm(s[it.multi_index])
             it.iternext()
 
-    def activate(self, x):
-        """ Returns the activation map to x """
-        self._activate(x)
-        return self.activation_map
-
-    def gaussian(self, c, sigma):
-        """ Returns a Gaussian centered in c """
-        d = 2 * np.pi * sigma * sigma
-        ax = np.exp(-np.power(self.neigx - c[0], 2) / d)
-        ay = np.exp(-np.power(self.neigy - c[1], 2) / d)
-        return np.outer(ax, ay)  # the external product gives a matrix
-
-    def diff_gaussian(self, c, sigma):
-        """ Mexican hat centered in c (unused) """
-        xx, yy = np.meshgrid(self.neigx, self.neigy)
-        p = np.power(xx - c[0], 2) + np.power(yy - c[1], 2)
-        d = 2 * np.pi * sigma * sigma
-        return np.exp(-(p) / d) * (1 - 2 / d * p)
-
-    def winner(self, x):
+    def _winner(self, x):
         """ Computes the coordinates of the winning neuron for the sample x """
         self._activate(x)
         return np.unravel_index(self.activation_map.argmin(), self.activation_map.shape)
 
-    def update(self, x, win, t):
+    def _update(self, x, win, t):
         """
             Updates the weights of the neurons.
             x - current pattern to learn
@@ -96,27 +98,12 @@ class MiniSom:
         eta = self.learning_rate / (1 + t / self.T)
         # sigma and learning rate decrease with the same rule
         sig = self.sigma / (1 + t / self.T)
-        g = self.neighborhood(win, sig) * eta  # improves the performances
+        g = self.neighborhood(win, sig, self.neigx, self.neigy) * eta  # improves the performances
         it = np.nditer(g, flags=['multi_index'])
         while not it.finished:
             # eta * neighborhood_function * (x-w)
             self.weights[it.multi_index] += g[it.multi_index] * (x - self.weights[it.multi_index])
             # normalization
-            self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
-            it.iternext()
-
-    def quantization(self, data):
-        """ Assigns a code book (weights vector of the winning neuron) to each sample in data. """
-        q = np.zeros(data.shape)
-        for i, x in enumerate(data):
-            q[i] = self.weights[self.winner(x)]
-        return q
-
-    def random_weights_init(self, data):
-        """ Initializes the weights of the SOM picking random samples from data """
-        it = np.nditer(self.activation_map, flags=['multi_index'])
-        while not it.finished:
-            self.weights[it.multi_index] = data[int(self.random_generator.rand() * len(data) - 1)]
             self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
             it.iternext()
 
@@ -126,25 +113,20 @@ class MiniSom:
         for iteration in range(num_iteration):
             # pick a random sample
             rand_i = int(round(self.random_generator.rand() * len(data) - 1))
-            self.update(data[rand_i], self.winner(data[rand_i]), iteration)
+            self._update(data[rand_i], self._winner(data[rand_i]), iteration)
 
     def train_batch(self, data, num_iteration):
         """ Trains using all the vectors in data sequentially """
         self._init_T(len(data) * num_iteration)
-        iteration = 0
-        while iteration < num_iteration:
+        for iteration in range(num_iteration):
             idx = iteration % (len(data) - 1)
-            self.update(data[idx], self.winner(data[idx]), iteration)
-            iteration += 1
-
-    def _init_T(self, num_iteration):
-        """ Initializes the parameter T needed to adjust the learning rate """
-        # keeps the learning rate nearly constant for the first half of the iterations
-        self.T = num_iteration / 2
+            self._update(data[idx], self._winner(data[idx]), iteration)
 
     def distance_map(self):
-        """ Returns the average distance map of the weights.
-            (Each mean is normalized in order to sum up to 1) """
+        """
+            Returns the average distance map of the weights.
+            (Each mean is normalized in order to sum up to 1)
+        """
         um = np.zeros((self.weights.shape[0], self.weights.shape[1]))
         it = np.nditer(um, flags=['multi_index'])
         while not it.finished:
@@ -156,15 +138,27 @@ class MiniSom:
         um = um / um.max()
         return um
 
-    def activation_response(self, data):
-        """
-            Returns a matrix where the element i,j is the number of times
-            that the neuron i,j have been winner.
-        """
-        a = np.zeros((self.weights.shape[0], self.weights.shape[1]))
-        for x in data:
-            a[self.winner(x)] += 1
-        return a
+    # unused
+    def random_weights_init(self, data):
+        """ Initializes the weights of the SOM picking random samples from data """
+        it = np.nditer(self.activation_map, flags=['multi_index'])
+        while not it.finished:
+            self.weights[it.multi_index] = data[int(self.random_generator.rand() * len(data) - 1)]
+            self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
+            it.iternext()
+
+    # unused
+    def activate(self, x):
+        """ Returns the activation map to x """
+        self._activate(x)
+        return self.activation_map
+
+    def quantization(self, data):
+        """ Assigns a code book (weights vector of the winning neuron) to each sample in data. """
+        q = np.zeros(data.shape)
+        for i, x in enumerate(data):
+            q[i] = self.weights[self._winner(x)]
+        return q
 
     def quantization_error(self, data):
         """
@@ -173,8 +167,18 @@ class MiniSom:
         """
         error = 0
         for x in data:
-            error += fast_norm(x - self.weights[self.winner(x)])
+            error += fast_norm(x - self.weights[self._winner(x)])
         return error / len(data)
+
+    def activation_response(self, data):
+        """
+            Returns a matrix where the element i,j is the number of times
+            that the neuron i,j have been winner.
+        """
+        a = np.zeros((self.weights.shape[0], self.weights.shape[1]))
+        for x in data:
+            a[self._winner(x)] += 1
+        return a
 
     def win_map(self, data):
         """
@@ -183,83 +187,5 @@ class MiniSom:
         """
         winmap = defaultdict(list)
         for x in data:
-            winmap[self.winner(x)].append(x)
+            winmap[self._winner(x)].append(x)
         return winmap
-
-
-# unit tests
-from numpy.testing import assert_almost_equal, assert_array_almost_equal, assert_array_equal
-
-
-class TestMinisom:
-
-    def setup_method(self, method):
-        self.som = MiniSom(5, 5, 1)
-        for w in self.som.weights:  # checking weights normalization
-            assert_almost_equal(1.0, np.linalg.norm(w))
-        self.som.weights = np.zeros((5, 5))  # fake weights
-        self.som.weights[2, 3] = 5.0
-        self.som.weights[1, 1] = 2.0
-
-    def test_fast_norm(self):
-        assert fast_norm(np.array([1, 3])) == sqrt(1 + 9)
-
-    def test_gaussian(self):
-        bell = self.som.gaussian((2, 2), 1)
-        assert bell.max() == 1.0
-        assert bell.argmax() == 12  # unravel(12) = (2,2)
-
-    def test_win_map(self):
-        winners = self.som.win_map([5.0, 2.0])
-        assert winners[(2, 3)][0] == 5.0
-        assert winners[(1, 1)][0] == 2.0
-
-    def test_activation_reponse(self):
-        response = self.som.activation_response([5.0, 2.0])
-        assert response[2, 3] == 1
-        assert response[1, 1] == 1
-
-    def test_activate(self):
-        assert self.som.activate(5.0).argmin() == 13.0  # unravel(13) = (2,3)
-
-    def test_quantization_error(self):
-        self.som.quantization_error([5, 2]) == 0.0
-        self.som.quantization_error([4, 1]) == 0.5
-
-    def test_quantization(self):
-        q = self.som.quantization(np.array([4, 2]))
-        assert q[0] == 5.0
-        assert q[1] == 2.0
-
-    def test_random_seed(self):
-        som1 = MiniSom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-        som2 = MiniSom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-        # same initialization
-        assert_array_almost_equal(som1.weights, som2.weights)
-        data = np.random.rand(100, 2)
-        som1 = MiniSom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-        som1.train_random(data, 10)
-        som2 = MiniSom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-        som2.train_random(data, 10)
-        # same state after training
-        assert_array_almost_equal(som1.weights, som2.weights)
-
-    def test_train_batch(self):
-        som = MiniSom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-        data = np.array([[4, 2], [3, 1]])
-        q1 = som.quantization_error(data)
-        som.train_batch(data, 10)
-        assert q1 > som.quantization_error(data)
-
-    def test_train_random(self):
-        som = MiniSom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-        data = np.array([[4, 2], [3, 1]])
-        q1 = som.quantization_error(data)
-        som.train_random(data, 10)
-        assert q1 > som.quantization_error(data)
-
-    def test_random_weights_init(self):
-        som = MiniSom(2, 2, 2, random_seed=1)
-        som.random_weights_init(np.array([[1.0, .0]]))
-        for w in som.weights:
-            assert_array_equal(w[0], np.array([1.0, .0]))
