@@ -189,3 +189,70 @@ class MiniSom(object):
         for x in data:
             winmap[self._winner(x)].append(x)
         return winmap
+
+
+class MiniSomCosine(MiniSom):
+    """ This is a specialised minisom class using a cosine distance function. """
+    def __calculate_data_norm2(self):
+        # since cosine distance makes use of norm2 values a lot, pre calculate them
+        pass
+
+    def _cosine(self, x, y):
+        """ Computes the Cosine distance between 1-D arrays. """
+        return 1 - (np.dot(x, y) / (fast_norm(x) * fast_norm(y)))
+
+    def _activate(self, x):
+        """ Updates matrix activation_map, in this matrix the element i,j is the response of the neuron i,j to x """
+        it = np.nditer(self.activation_map, flags=['multi_index'])
+        while not it.finished:
+            self.activation_map[it.multi_index] = self._cosine(x, self.weights[it.multi_index])
+            it.iternext()
+
+    def _update(self, x, win, t):
+        """
+            Updates the weights of the neurons.
+            x - current pattern to learn
+            win - position of the winning neuron for x (array or tuple).
+            t - iteration index
+        """
+        # eta(t) = eta(0) / (1 + t/T)
+        # keeps the learning rate nearly constant for the first T iterations
+        # and then adjusts it
+        eta = self.learning_rate / (1 + t / self.T)
+        # sigma and learning rate decrease with the same rule
+        sig = self.sigma / (1 + t / self.T)
+        g = self.neighborhood(win, sig, self.neigx, self.neigy) * eta  # improves the performances
+        it = np.nditer(g, flags=['multi_index'])
+        while not it.finished:
+            # eta * neighborhood_function * (x-w)
+            self.weights[it.multi_index] += g[it.multi_index] * (x - self.weights[it.multi_index])
+            # normalization
+            self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
+            it.iternext()
+
+    def distance_map(self):
+        """
+            Returns the average distance map of the weights.
+            (Each mean is normalized in order to sum up to 1)
+        """
+        um = np.zeros(self.weights.shape[:2])
+        it = np.nditer(um, flags=['multi_index'])
+        while not it.finished:
+            for ii in range(it.multi_index[0] - 1, it.multi_index[0] + 2):
+                for jj in range(it.multi_index[1] - 1, it.multi_index[1] + 2):
+                    if ii >= 0 and ii < self.weights.shape[0] and jj >= 0 and jj < self.weights.shape[1]:
+                        um[it.multi_index] += self._cosine(self.weights[ii, jj, :], self.weights[it.multi_index])
+            it.iternext()
+        um = um / um.max()
+        return um
+
+    def quantization_error(self, data):
+        """
+            Returns the quantization error computed as the average distance between
+            each input sample and its best matching unit.
+        """
+        error = 0
+        for x in data:
+            y = self.weights[self.win_map(x)]
+            error += self._cosine(x, y)
+        return error / len(data)
