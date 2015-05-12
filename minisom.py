@@ -1,7 +1,7 @@
+import math
 import numpy as np
 
 from collections import defaultdict
-from math import sqrt
 from warnings import warn
 
 
@@ -13,12 +13,18 @@ from warnings import warn
 
 
 # distances
-def fast_norm(x):
+def fast_norm(x, y=None):
     """
         Returns norm-2 of a 1-D numpy array.
         * faster than np.linalg.norm in case of 1-D arrays (numpy 1.9.2rc1).
     """
-    return sqrt(np.dot(x, x.T))
+    if not y:
+        y = x.T
+    return math.sqrt(np.dot(x, y))
+
+def cosine(x, y):
+    """ Computes the Cosine distance between 1-D arrays. """
+    return 1 - (np.dot(x, y) / (fast_norm(x) * fast_norm(y)))
 
 
 # neighboorhood
@@ -56,14 +62,14 @@ class MiniSom(object):
         self.learning_rate = learning_rate
         self.random_generator = np.random.RandomState(random_seed)
 
-        # random initialization
+        # weights random initialization and normalization
         self.weights = self.random_generator.rand(x, y, input_len) * 2 - 1
-
-        # normalization
         self.weights = np.array([v / np.linalg.norm(v) for v in self.weights])
+
         self.activation_map = np.zeros((x, y))
+        # neighborhood variables
         self.neigx = np.arange(x)
-        self.neigy = np.arange(y)  # used to evaluate the neighborhood function
+        self.neigy = np.arange(y)
         self.neighborhood = neighborhood_fn
 
     def _init_T(self, num_iteration):
@@ -84,6 +90,10 @@ class MiniSom(object):
         """ Computes the coordinates of the winning neuron for the sample x """
         self._activate(x)
         return np.unravel_index(self.activation_map.argmin(), self.activation_map.shape)
+
+    def _winner2(self, x):
+        activation_map = np.apply_along_axis(lambda xx: cosine(x, xx), 2, self.weights)
+        return np.unravel_index(activation_map.argmin(), activation_map.shape)
 
     def _update(self, x, win, t):
         """
@@ -115,12 +125,16 @@ class MiniSom(object):
             rand_i = int(round(self.random_generator.rand() * len(data) - 1))
             self._update(data[rand_i], self._winner(data[rand_i]), iteration)
 
-    def train_batch(self, data, num_iteration):
+    def train_batch(self, data, epochs):
         """ Trains using all the vectors in data sequentially """
-        self._init_T(len(data) * num_iteration)
+        self._epoch_weights = [] # store weights for each epoch
+        num_iteration = len(data) * epochs
+        self._init_T(num_iteration)
         for iteration in range(num_iteration):
             idx = iteration % (len(data) - 1)
             self._update(data[idx], self._winner(data[idx]), iteration)
+            if idx == 0:
+                self._epoch_weights.append(self.weights)
 
     def distance_map(self):
         """
@@ -197,15 +211,11 @@ class MiniSomCosine(MiniSom):
         # since cosine distance makes use of norm2 values a lot, pre calculate them
         pass
 
-    def _cosine(self, x, y):
-        """ Computes the Cosine distance between 1-D arrays. """
-        return 1 - (np.dot(x, y) / (fast_norm(x) * fast_norm(y)))
-
     def _activate(self, x):
         """ Updates matrix activation_map, in this matrix the element i,j is the response of the neuron i,j to x """
         it = np.nditer(self.activation_map, flags=['multi_index'])
         while not it.finished:
-            self.activation_map[it.multi_index] = self._cosine(x, self.weights[it.multi_index])
+            self.activation_map[it.multi_index] = cosine(x, self.weights[it.multi_index])
             it.iternext()
 
     def _update(self, x, win, t):
