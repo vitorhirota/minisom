@@ -129,12 +129,13 @@ class MiniSom(object):
         """ Trains using all the vectors in data sequentially """
         self._epoch_weights = [] # store weights for each epoch
         num_iteration = len(data) * epochs
-        self._init_T(num_iteration)
-        for iteration in range(num_iteration):
-            idx = iteration % (len(data) - 1)
-            self._update(data[idx], self._winner(data[idx]), iteration)
-            if idx == 0:
-                self._epoch_weights.append(self.weights)
+        # self._init_T(num_iteration)
+        self.T = len(data) # keeps the learning rate nearly constant for the first epoch
+        for i in range(epochs):
+            for idx in xrange(len(data)):
+                iteration = i+1 * idx+1
+                self._update(data[idx], self._winner(data[idx]), iteration)
+            self._epoch_weights.append(np.copy(self.weights))
 
     def distance_map(self):
         """
