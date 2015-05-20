@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import time
 
 from collections import defaultdict
 from warnings import warn
@@ -33,7 +34,11 @@ def gaussian(c, sigma, neigx, neigy):
     d = 2 * np.pi * sigma * sigma
     ax = np.exp(-np.power(neigx - c[0], 2) / d)
     ay = np.exp(-np.power(neigy - c[1], 2) / d)
-    return np.outer(ax, ay)  # the external product gives a matrix
+    # the external product gives a matrix
+    bell = np.outer(ax, ay)
+    # rescale
+    bell = (bell - bell.min()) / (bell.max() - bell.min())
+    return bell
 
 def diff_gaussian(c, sigma, neigx, neigy):
     """ Mexican hat centered in c (unused) """
@@ -86,34 +91,30 @@ class MiniSom(object):
             self.activation_map[it.multi_index] = fast_norm(s[it.multi_index])
             it.iternext()
 
-    def _winner(self, x):
-        """ Computes the coordinates of the winning neuron for the sample x """
-        self._activate(x)
-        return np.unravel_index(self.activation_map.argmin(), self.activation_map.shape)
-
-    def _winner2(self, x):
-        activation_map = np.apply_along_axis(lambda xx: cosine(x, xx), 2, self.weights)
-        return np.unravel_index(activation_map.argmin(), activation_map.shape)
-
-    def _update(self, x, win, t):
+    def _update(self, x, g):
         """
             Updates the weights of the neurons.
             x - current pattern to learn
-            win - position of the winning neuron for x (array or tuple).
-            t - iteration index
+            g - gaussian matrix of update weights
         """
-        # eta(t) = eta(0) / (1 + t/T)
-        # keeps the learning rate nearly constant for the first T iterations
-        # and then adjusts it
-        eta = self.learning_rate / (1 + t / self.T)
-        # sigma and learning rate decrease with the same rule
-        sig = self.sigma / (1 + t / self.T)
-        g = self.neighborhood(win, sig, self.neigx, self.neigy) * eta  # improves the performances
         it = np.nditer(g, flags=['multi_index'])
         while not it.finished:
             # eta * neighborhood_function * (x-w)
             self.weights[it.multi_index] += g[it.multi_index] * (x - self.weights[it.multi_index])
             # normalization
+            self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
+            it.iternext()
+
+    def winner(self, x):
+        """ Computes the coordinates of the winning neuron for the sample x """
+        self._activate(x)
+        return np.unravel_index(self.activation_map.argmin(), self.activation_map.shape)
+
+    def random_weights_init(self, data):
+        """ Initializes the weights of the SOM picking random samples from data """
+        it = np.nditer(self.activation_map, flags=['multi_index'])
+        while not it.finished:
+            self.weights[it.multi_index] = data[int(self.random_generator.rand() * len(data) - 1)]
             self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
             it.iternext()
 
@@ -123,18 +124,29 @@ class MiniSom(object):
         for iteration in range(num_iteration):
             # pick a random sample
             rand_i = int(round(self.random_generator.rand() * len(data) - 1))
-            self._update(data[rand_i], self._winner(data[rand_i]), iteration)
+            self._update(data[rand_i], self.winner(data[rand_i]), iteration)
 
     def train_batch(self, data, epochs):
         """ Trains using all the vectors in data sequentially """
-        self._epoch_weights = [] # store weights for each epoch
-        num_iteration = len(data) * epochs
-        # self._init_T(num_iteration)
-        self.T = len(data) # keeps the learning rate nearly constant for the first epoch
+        self.T = epochs/2.
+        # store weights for each epoch
+        self._epoch_weights = [self.weights]
+
         for i in range(epochs):
+            t0 = time.time()
+            # sigma and learning rate decrease with the same rule
+            eta = self.learning_rate * math.e ** (- i / self.T)
+            sig = self.sigma * math.e ** (- i / self.T)
+
             for idx in xrange(len(data)):
-                iteration = i+1 * idx+1
-                self._update(data[idx], self._winner(data[idx]), iteration)
+                w = self.winner(data[idx])
+                g = self.neighborhood(w, sig, self.neigx, self.neigy) * eta
+                self._update(data[idx], g)
+
+            print 'epoch', i
+            print '. ran in %s seconds' % (time.time() - t0)
+            print '. qe:', self.quantization_error(data)
+
             self._epoch_weights.append(np.copy(self.weights))
 
     def distance_map(self):
@@ -153,26 +165,26 @@ class MiniSom(object):
         um = um / um.max()
         return um
 
-    # unused
-    def random_weights_init(self, data):
-        """ Initializes the weights of the SOM picking random samples from data """
-        it = np.nditer(self.activation_map, flags=['multi_index'])
-        while not it.finished:
-            self.weights[it.multi_index] = data[int(self.random_generator.rand() * len(data) - 1)]
-            self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
-            it.iternext()
-
-    # unused
     def activate(self, x):
         """ Returns the activation map to x """
         self._activate(x)
         return self.activation_map
 
+    def activation_response(self, data):
+        """
+            Returns a matrix where the element i,j is the number of times
+            that the neuron i,j have been winner.
+        """
+        a = np.zeros((self.weights.shape[0], self.weights.shape[1]))
+        for x in data:
+            a[self.winner(x)] += 1
+        return a
+
     def quantization(self, data):
         """ Assigns a code book (weights vector of the winning neuron) to each sample in data. """
         q = np.zeros(data.shape)
         for i, x in enumerate(data):
-            q[i] = self.weights[self._winner(x)]
+            q[i] = self.weights[self.winner(x)]
         return q
 
     def quantization_error(self, data):
@@ -182,18 +194,8 @@ class MiniSom(object):
         """
         error = 0
         for x in data:
-            error += fast_norm(x - self.weights[self._winner(x)])
+            error += fast_norm(x - self.weights[self.winner(x)])
         return error / len(data)
-
-    def activation_response(self, data):
-        """
-            Returns a matrix where the element i,j is the number of times
-            that the neuron i,j have been winner.
-        """
-        a = np.zeros((self.weights.shape[0], self.weights.shape[1]))
-        for x in data:
-            a[self._winner(x)] += 1
-        return a
 
     def win_map(self, data):
         """
@@ -202,7 +204,7 @@ class MiniSom(object):
         """
         winmap = defaultdict(list)
         for x in data:
-            winmap[self._winner(x)].append(x)
+            winmap[self.winner(x)].append(x)
         return winmap
 
 
