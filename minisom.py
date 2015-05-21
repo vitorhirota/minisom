@@ -221,28 +221,6 @@ class MiniSomCosine(MiniSom):
             self.activation_map[it.multi_index] = cosine(x, self.weights[it.multi_index])
             it.iternext()
 
-    def _update(self, x, win, t):
-        """
-            Updates the weights of the neurons.
-            x - current pattern to learn
-            win - position of the winning neuron for x (array or tuple).
-            t - iteration index
-        """
-        # eta(t) = eta(0) / (1 + t/T)
-        # keeps the learning rate nearly constant for the first T iterations
-        # and then adjusts it
-        eta = self.learning_rate / (1 + t / self.T)
-        # sigma and learning rate decrease with the same rule
-        sig = self.sigma / (1 + t / self.T)
-        g = self.neighborhood(win, sig, self.neigx, self.neigy) * eta  # improves the performances
-        it = np.nditer(g, flags=['multi_index'])
-        while not it.finished:
-            # eta * neighborhood_function * (x-w)
-            self.weights[it.multi_index] += g[it.multi_index] * (x - self.weights[it.multi_index])
-            # normalization
-            self.weights[it.multi_index] = self.weights[it.multi_index] / fast_norm(self.weights[it.multi_index])
-            it.iternext()
-
     def distance_map(self):
         """
             Returns the average distance map of the weights.
@@ -266,6 +244,5 @@ class MiniSomCosine(MiniSom):
         """
         error = 0
         for x in data:
-            y = self.weights[self.win_map(x)]
-            error += self._cosine(x, y)
+            error += self._cosine(x, self.weights[self.winner(x)])
         return error / len(data)
