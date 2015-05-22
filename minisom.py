@@ -232,7 +232,7 @@ class MiniSomCosine(MiniSom):
             for ii in range(it.multi_index[0] - 1, it.multi_index[0] + 2):
                 for jj in range(it.multi_index[1] - 1, it.multi_index[1] + 2):
                     if ii >= 0 and ii < self.weights.shape[0] and jj >= 0 and jj < self.weights.shape[1]:
-                        um[it.multi_index] += self._cosine(self.weights[ii, jj, :], self.weights[it.multi_index])
+                        um[it.multi_index] += cosine(self.weights[ii, jj, :], self.weights[it.multi_index])
             it.iternext()
         um = um / um.max()
         return um
@@ -244,5 +244,5 @@ class MiniSomCosine(MiniSom):
         """
         error = 0
         for x in data:
-            error += self._cosine(x, self.weights[self.winner(x)])
+            error += cosine(x, self.weights[self.winner(x)])
         return error / len(data)
